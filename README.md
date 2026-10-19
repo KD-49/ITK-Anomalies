@@ -1,6 +1,6 @@
-# ITK-Anomalies (Progress UTS ~33% — Fitur Esensial Inti)
+# ITK-Anomalies (Progress UTS ~30%)
 
-Implementasi tahap awal (Prototype / UTS) untuk game **ITK Anomalies** yang berfokus pada **4 fitur esensial utama (33,3% dari 12 fitur GDD)**:
+Implementasi tahap awal (Prototype / UTS) untuk game **ITK Anomalies** yang berfokus pada **4 fitur esensial utama (30% dari 12 fitur GDD)**:
 
 1. **Alur Shift & Kedatangan Pengunjung Satu per Satu**:
    - Pengunjung datang satu per satu menuju loket Pos Satpam.
@@ -11,7 +11,7 @@ Implementasi tahap awal (Prototype / UTS) untuk game **ITK Anomalies** yang berf
 3. **Pemeriksaan Kartu Identitas (KTM / ID Staf)**:
    - Menampilkan kartu identitas pengunjung untuk dibandingkan dengan data di komputer.
 4. **Komputer Data Kampus ITK & Penilaian Shift**:
-   - Terbuka saat pemain menekan **`E`** pada meja komputer di ruang belakang Pos Satpam (berisi tab *Penghuni Asrama*, *Peminjaman Ruang*, *Kegiatan Malam*, dan *Dosen & Staf*).
+   - Terbuka saat pemain menekan **`E`** pada meja komputer di Pos Satpam (berisi tab *Penghuni Asrama*, *Peminjaman Ruang*, *Kegiatan Malam*, dan *Dosen & Staf*).
    - Di akhir shift (setelah 5 pengunjung diproses), sistem menampilkan evaluasi akurasi, peringkat (S/A/B/C/D), dan gaji *coins*.
 
 ## Cara Menjalankan
