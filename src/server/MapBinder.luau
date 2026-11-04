@@ -51,14 +51,193 @@ local gatePrompt: ProximityPrompt? = nil
 local gateArrowBillboard: BillboardGui? = nil
 local tutorialBeamFolder: Folder? = nil
 local posLights: { Light } = {}
+local blackoutActive = false
+local powerIndicatorLight: PointLight? = nil
+local powerIndicatorPart: Part? = nil
+local powerHighlight: Highlight? = nil
+local powerBeam: Beam? = nil
+local loketPrompt: ProximityPrompt? = nil
+local visitorPrompt: ProximityPrompt? = nil
+
+-- Menghubungkan script interaksi ke aset Gardu Listrik / Transformator di dalam Folder Furnitur
+local function ensurePowerPanel(onRepairInteract: (Player) -> ())
+	-- Hapus panel buatan lama jika ada
+	local oldCustom = Workspace:FindFirstChild("GarduListrik", true)
+	if oldCustom and oldCustom:IsA("Model") and oldCustom.Parent and oldCustom.Parent.Name == "Barang Interaktif" then
+		oldCustom:Destroy()
+	end
+
+	-- Cari aset gardu listrik asli di Workspace.Furnitur (pilih Transformator yang berada di darat / memiliki PowerBox)
+	local targetModel: Instance? = nil
+	local attachPart: BasePart? = nil
+
+	for _, desc in ipairs(Workspace:GetDescendants()) do
+		if desc:IsA("Model") and (desc.Name == "Transformator" or desc.Name == "Gardu" or desc.Name == "GarduListrik") then
+			local powerBox = desc:FindFirstChild("PowerBox", true)
+			if powerBox then
+				targetModel = desc
+				attachPart = powerBox:FindFirstChild("Doorpart1", true) :: BasePart?
+					or powerBox:FindFirstChildWhichIsA("BasePart", true)
+				break
+			end
+			local anyPart = desc:FindFirstChildWhichIsA("BasePart", true)
+			if anyPart and anyPart.Position.Y < 90 and not targetModel then
+				targetModel = desc
+				attachPart = anyPart
+			end
+		end
+	end
+
+	if targetModel and not attachPart then
+		if targetModel:IsA("BasePart") then
+			attachPart = targetModel
+		elseif targetModel:IsA("Model") then
+			attachPart = targetModel.PrimaryPart or targetModel:FindFirstChildWhichIsA("BasePart", true)
+		end
+	end
+
+	-- Fallback jika aset belum diletakkan di Workspace
+	if not attachPart then
+		local folder = Workspace:FindFirstChild("Furnitur")
+		if not folder then
+			folder = Instance.new("Folder")
+			folder.Name = "Furnitur"
+			folder.Parent = Workspace
+		end
+
+		local panelModel = Instance.new("Model")
+		panelModel.Name = "Transformator"
+
+		local panelBox = Instance.new("Part")
+		panelBox.Name = "TransformatorBase"
+		panelBox.Size = Vector3.new(2.5, 3.5, 2.0)
+		panelBox.CFrame = CFrame.new(-183.0, 71.5, 42.9)
+		panelBox.Color = Color3.fromRGB(60, 65, 72)
+		panelBox.Material = Enum.Material.Metal
+		panelBox.Anchored = true
+		panelBox.CanCollide = true
+		panelBox.Parent = panelModel
+
+		panelModel.PrimaryPart = panelBox
+		panelModel.Parent = folder
+		targetModel = panelModel
+		attachPart = panelBox
+	end
+
+	-- Bersihkan prompt atau indikator lama yang mungkin menempel
+	for _, child in ipairs(attachPart:GetChildren()) do
+		if child.Name == "PowerPrompt" or child.Name == "GarduStatusLight" or child.Name == "GarduIndicatorPart" then
+			child:Destroy()
+		end
+	end
+
+	local indPart = Instance.new("Part")
+	indPart.Name = "GarduIndicatorPart"
+	indPart.Size = Vector3.new(0.35, 0.35, 0.35)
+	indPart.Position = attachPart.Position + Vector3.new(0, 1.2, 0)
+	indPart.Color = Color3.fromRGB(60, 220, 80)
+	indPart.Material = Enum.Material.Neon
+	indPart.Anchored = true
+	indPart.CanCollide = false
+	indPart.Parent = attachPart
+	powerIndicatorPart = indPart
+
+	local light = Instance.new("PointLight")
+	light.Name = "GarduStatusLight"
+	light.Color = Color3.fromRGB(60, 220, 80)
+	light.Brightness = 1.5
+	light.Range = 10
+	light.Parent = indPart
+	powerIndicatorLight = light
+
+	-- Highlight visual gardu listrik agar mudah ditemukan saat gelap gulita
+	local oldHl = (targetModel :: Instance):FindFirstChild("GarduHighlight")
+	if oldHl then
+		oldHl:Destroy()
+	end
+
+	local hl = Instance.new("Highlight")
+	hl.Name = "GarduHighlight"
+	hl.FillColor = Color3.fromRGB(255, 195, 40)
+	hl.OutlineColor = Color3.fromRGB(255, 240, 100)
+	hl.FillTransparency = 0.45
+	hl.OutlineTransparency = 0
+	hl.Enabled = false
+	hl.Adornee = targetModel
+	hl.Parent = targetModel
+	powerHighlight = hl
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "PowerPrompt"
+	prompt.ObjectText = "Gardu Listrik"
+	prompt.ActionText = "Perbaiki Panel Kabel"
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.HoldDuration = 0.5
+	prompt.MaxActivationDistance = 16
+	prompt.RequiresLineOfSight = false
+	prompt.Enabled = false
+	prompt.Parent = indPart
+
+	prompt.Triggered:Connect(onRepairInteract)
+	return prompt
+end
+
+function MapBinder.SetBlackout(active: boolean)
+	blackoutActive = active
+	for _, l in ipairs(posLights) do
+		if l and l.Parent then
+			l.Enabled = not active
+		end
+	end
+
+	local prompt = if powerIndicatorPart then powerIndicatorPart:FindFirstChildWhichIsA("ProximityPrompt", true) else nil
+	if prompt then
+		prompt.Enabled = active
+	end
+
+	if powerHighlight then
+		powerHighlight.Enabled = active
+	end
+
+	if powerIndicatorLight and powerIndicatorPart then
+		if active then
+			powerIndicatorLight.Color = Color3.fromRGB(255, 45, 45)
+			powerIndicatorLight.Brightness = 4.0
+			powerIndicatorLight.Range = 22
+			powerIndicatorPart.Color = Color3.fromRGB(255, 45, 45)
+		else
+			powerIndicatorLight.Color = Color3.fromRGB(60, 220, 80)
+			powerIndicatorLight.Brightness = 1.5
+			powerIndicatorLight.Range = 10
+			powerIndicatorPart.Color = Color3.fromRGB(60, 220, 80)
+		end
+	end
+end
+
+function MapBinder.IsBlackout(): boolean
+	return blackoutActive
+end
+
+function MapBinder.SetLoketPromptActive(active: boolean)
+	if loketPrompt then
+		loketPrompt.Enabled = active
+	end
+	if visitorPrompt then
+		visitorPrompt.Enabled = active
+	end
+end
 
 local function cleanFreeModelScripts()
-	local badRuntime = ProximityPromptService:FindFirstChild("Runtime")
-	if badRuntime then
-		badRuntime:Destroy()
+	-- Matikan sistem injeksi InputOverlay dari free model (seperti di dalam Coffee Machine & ProximityPromptService)
+	Workspace:SetAttribute("runtime-object-defaults", true)
+	ProximityPromptService.Enabled = true
+	for _, child in ipairs(ProximityPromptService:GetChildren()) do
+		child:Destroy()
 	end
 	for _, obj in ipairs(Workspace:GetDescendants()) do
-		if obj:IsA("Script") and obj.Name == "Script" and obj.Parent and obj.Parent.Parent and obj.Parent.Parent.Name == "Camera" then
+		if obj.Name == "Runtime" or obj.Name == "RuntimeInput" then
+			obj:Destroy()
+		elseif obj:IsA("Script") and obj.Name == "Script" and obj.Parent and obj.Parent.Parent and obj.Parent.Parent.Name == "Camera" then
 			obj:Destroy()
 		end
 	end
@@ -384,9 +563,11 @@ function MapBinder.Init(callbacks: {
 	onInteractLoket: (player: Player) -> (),
 	onInteractLaptopData: (player: Player) -> (),
 	onInteractPcCctv: (player: Player) -> (),
+	onInteractPowerPanel: (player: Player) -> (),
 })
 	cleanFreeModelScripts()
 	setupCctvCameraNodes()
+	ensurePowerPanel(callbacks.onInteractPowerPanel)
 
 	tutorialBeamFolder = Workspace:FindFirstChild("TutorialBeams") :: Folder
 	if not tutorialBeamFolder then
@@ -508,8 +689,8 @@ function MapBinder.Init(callbacks: {
 		callbacks.onInteractPcCctv
 	)
 
-	-- 4. Prompt Meja Loket Depan
-	createPromptNode(
+	-- 4. Prompt Meja Loket Depan (Hanya aktif ketika pengunjung telah sampai di depan loket)
+	local _loketNode, lPrompt = createPromptNode(
 		"Prompt_LoketDepan",
 		Vector3.new(-111.9, 71.3, -9.2),
 		"Loket Pemeriksaan",
@@ -517,6 +698,8 @@ function MapBinder.Init(callbacks: {
 		0,
 		callbacks.onInteractLoket
 	)
+	lPrompt.Enabled = false
+	loketPrompt = lPrompt
 
 	Players.PlayerAdded:Connect(function(player)
 		player.CharacterAdded:Connect(function(char)
@@ -558,6 +741,11 @@ local function getGroundHrpY(npc: Model, x: number, z: number, fallbackY: number
 	if tutorialBeamFolder then
 		table.insert(excludeList, tutorialBeamFolder)
 	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(excludeList, player.Character)
+		end
+	end
 	params.FilterDescendantsInstances = excludeList
 	params.IgnoreWater = true
 
@@ -569,7 +757,179 @@ local function getGroundHrpY(npc: Model, x: number, z: number, fallbackY: number
 	return fallbackY
 end
 
--- Menggerakkan pengunjung menyusuri daftar waypoint dengan arah hadap sesuai jalan + animasi ayunan kaki & tangan R6
+-- Deteksi apakah pemain menghalangi jalur jalan NPC, lalu hitung pergeseran memutar (lateral offset)
+local currentAvoidOffset = Vector2.zero
+local function getPlayerAvoidanceOffset(npcPos: Vector3, forwardDir: Vector3): Vector2
+	local avoidTarget = Vector2.zero
+	local closestDist = 999
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local char = player.Character
+		local hrp = if char then char:FindFirstChild("HumanoidRootPart") :: BasePart? else nil
+		if hrp then
+			local diff = hrp.Position - npcPos
+			local flatDiff = Vector2.new(diff.X, diff.Z)
+			local dist = flatDiff.Magnitude
+
+			if dist < 5.2 and dist < closestDist then
+				closestDist = dist
+				local flatFwd = Vector2.new(forwardDir.X, forwardDir.Z).Unit
+				local dot = flatFwd:Dot(flatDiff)
+				-- Jika pemain berada di depan arah jalan NPC (dalam sudut pandang depan)
+				if dot > -0.5 then
+					local sideCross = flatFwd.X * flatDiff.Y - flatFwd.Y * flatDiff.X
+					-- Geser memutar ke kanan atau ke kiri jalur
+					local sideSign = if sideCross >= 0 then -1 else 1
+					local pushAmount = math.clamp(4.5 - dist * 0.7, 1.8, 3.8)
+					local rightVec = Vector2.new(flatFwd.Y, -flatFwd.X)
+					avoidTarget = rightVec * (sideSign * pushAmount)
+				end
+			end
+		end
+	end
+
+	return avoidTarget
+end
+
+-- Generator Model Avatar R6 lengkap (Head + Face, Torso, Arms, Legs, Motor6D, Humanoid)
+local function buildFullR6Avatar(shirtColor: Color3): Model
+	local npc = Instance.new("Model")
+	npc.Name = "VisitorR6"
+
+	local hrp = Instance.new("Part")
+	hrp.Name = "HumanoidRootPart"
+	hrp.Size = Vector3.new(2, 2, 1)
+	hrp.Transparency = 1
+	hrp.CanCollide = false
+	hrp.Anchored = true
+	hrp.Parent = npc
+
+	local torso = Instance.new("Part")
+	torso.Name = "Torso"
+	torso.Size = Vector3.new(2, 2, 1)
+	torso.Color = shirtColor
+	torso.Material = Enum.Material.SmoothPlastic
+	torso.CanCollide = false
+	torso.Anchored = false
+	torso.Parent = npc
+
+	local head = Instance.new("Part")
+	head.Name = "Head"
+	head.Size = Vector3.new(2, 1, 1)
+	head.Color = Color3.fromRGB(245, 205, 175)
+	head.Material = Enum.Material.SmoothPlastic
+	head.CanCollide = false
+	head.Anchored = false
+	head.Parent = npc
+
+	local specialMesh = Instance.new("SpecialMesh")
+	specialMesh.MeshType = Enum.MeshType.Head
+	specialMesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+	specialMesh.Parent = head
+
+	local face = Instance.new("Decal")
+	face.Name = "face"
+	face.Texture = "rbxasset://textures/face.png"
+	face.Face = Enum.NormalId.Front
+	face.Parent = head
+
+	local leftArm = Instance.new("Part")
+	leftArm.Name = "Left Arm"
+	leftArm.Size = Vector3.new(1, 2, 1)
+	leftArm.Color = shirtColor
+	leftArm.Material = Enum.Material.SmoothPlastic
+	leftArm.CanCollide = false
+	leftArm.Anchored = false
+	leftArm.Parent = npc
+
+	local rightArm = Instance.new("Part")
+	rightArm.Name = "Right Arm"
+	rightArm.Size = Vector3.new(1, 2, 1)
+	rightArm.Color = shirtColor
+	rightArm.Material = Enum.Material.SmoothPlastic
+	rightArm.CanCollide = false
+	rightArm.Anchored = false
+	rightArm.Parent = npc
+
+	local pantsColor = Color3.fromRGB(35, 40, 52)
+	local leftLeg = Instance.new("Part")
+	leftLeg.Name = "Left Leg"
+	leftLeg.Size = Vector3.new(1, 2, 1)
+	leftLeg.Color = pantsColor
+	leftLeg.Material = Enum.Material.SmoothPlastic
+	leftLeg.CanCollide = false
+	leftLeg.Anchored = false
+	leftLeg.Parent = npc
+
+	local rightLeg = Instance.new("Part")
+	rightLeg.Name = "Right Leg"
+	rightLeg.Size = Vector3.new(1, 2, 1)
+	rightLeg.Color = pantsColor
+	rightLeg.Material = Enum.Material.SmoothPlastic
+	rightLeg.CanCollide = false
+	rightLeg.Anchored = false
+	rightLeg.Parent = npc
+
+	-- Motor6D joints standard R6
+	local rootJoint = Instance.new("Motor6D")
+	rootJoint.Name = "RootJoint"
+	rootJoint.Part0 = hrp
+	rootJoint.Part1 = torso
+	rootJoint.C0 = CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, 0)
+	rootJoint.C1 = CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, 0)
+	rootJoint.Parent = hrp
+
+	local neck = Instance.new("Motor6D")
+	neck.Name = "Neck"
+	neck.Part0 = torso
+	neck.Part1 = head
+	neck.C0 = CFrame.new(0, 1, 0, -1, 0, 0, 0, 0, 1, 0, 1, 0)
+	neck.C1 = CFrame.new(0, -0.5, 0, -1, 0, 0, 0, 0, 1, 0, 1, 0)
+	neck.Parent = torso
+
+	local leftShoulder = Instance.new("Motor6D")
+	leftShoulder.Name = "Left Shoulder"
+	leftShoulder.Part0 = torso
+	leftShoulder.Part1 = leftArm
+	leftShoulder.C0 = CFrame.new(-1, 0.5, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0)
+	leftShoulder.C1 = CFrame.new(0.5, 0.5, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0)
+	leftShoulder.Parent = torso
+
+	local rightShoulder = Instance.new("Motor6D")
+	rightShoulder.Name = "Right Shoulder"
+	rightShoulder.Part0 = torso
+	rightShoulder.Part1 = rightArm
+	rightShoulder.C0 = CFrame.new(1, 0.5, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)
+	rightShoulder.C1 = CFrame.new(-0.5, 0.5, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)
+	rightShoulder.Parent = torso
+
+	local leftHip = Instance.new("Motor6D")
+	leftHip.Name = "Left Hip"
+	leftHip.Part0 = torso
+	leftHip.Part1 = leftLeg
+	leftHip.C0 = CFrame.new(-1, -1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0)
+	leftHip.C1 = CFrame.new(-0.5, 1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0)
+	leftHip.Parent = torso
+
+	local rightHip = Instance.new("Motor6D")
+	rightHip.Name = "Right Hip"
+	rightHip.Part0 = torso
+	rightHip.Part1 = rightLeg
+	rightHip.C0 = CFrame.new(1, -1, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)
+	rightHip.C1 = CFrame.new(0.5, 1, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)
+	rightHip.Parent = torso
+
+	local humanoid = Instance.new("Humanoid")
+	humanoid.Name = "Humanoid"
+	humanoid.PlatformStand = true
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+	humanoid.Parent = npc
+
+	npc.PrimaryPart = hrp
+	return npc
+end
+
+-- Menggerakkan pengunjung menyusuri daftar waypoint dengan arah hadap sesuai jalan + animasi ayunan kaki & tangan R6 + jalan memutar jika dihalangi pemain
 local function walkVisitorPath(
 	npc: Model,
 	waypoints: { Vector3 },
@@ -629,6 +989,7 @@ local function walkVisitorPath(
 	local segLength = math.max(0.01, (flatNext - flatStart).Magnitude)
 	local segDuration = segLength / math.max(1, speedStudsPerSec)
 	local currentLookDir = (flatNext - flatStart).Unit
+	currentAvoidOffset = Vector2.zero
 
 	local conn: RBXScriptConnection? = nil
 	conn = RunService.Heartbeat:Connect(function(dt: number)
@@ -643,13 +1004,24 @@ local function walkVisitorPath(
 		totalWalkDist += dt * speedStudsPerSec
 		local alpha = math.clamp(segElapsed / segDuration, 0, 1)
 
-		local interpX = startPos.X + (nextPos.X - startPos.X) * alpha
-		local interpZ = startPos.Z + (nextPos.Z - startPos.Z) * alpha
+		local baseInterpX = startPos.X + (nextPos.X - startPos.X) * alpha
+		local baseInterpZ = startPos.Z + (nextPos.Z - startPos.Z) * alpha
 		local interpFallbackY = startPos.Y + (nextPos.Y - startPos.Y) * alpha
+
+		-- Jika pemain menghalangi di depan, NPC belok memutar secara halus (menghindar ke samping)
+		local targetAvoid = getPlayerAvoidanceOffset(Vector3.new(baseInterpX, interpFallbackY, baseInterpZ), currentLookDir)
+		currentAvoidOffset = currentAvoidOffset:Lerp(targetAvoid, math.clamp(dt * 6, 0, 1))
+
+		local interpX = baseInterpX + currentAvoidOffset.X
+		local interpZ = baseInterpZ + currentAvoidOffset.Y
 		local groundY = getGroundHrpY(npc, interpX, interpZ, interpFallbackY)
 
 		local targetDir = (flatNext - flatStart).Unit
-		currentLookDir = currentLookDir:Lerp(targetDir, math.clamp(dt * 10, 0, 1)).Unit
+		if currentAvoidOffset.Magnitude > 0.3 then
+			local detourDir = (Vector2.new(flatNext.X, flatNext.Z) - Vector2.new(interpX, interpZ)).Unit
+			targetDir = Vector3.new(detourDir.X, 0, detourDir.Y)
+		end
+		currentLookDir = currentLookDir:Lerp(targetDir, math.clamp(dt * 8, 0, 1)).Unit
 
 		-- Ayunan kaki & lengan R6 secara natural saat melangkah
 		local stridePhase = totalWalkDist * 1.65
@@ -715,12 +1087,8 @@ function MapBinder.SpawnSingleVisitor(
 	if rigTemplate then
 		npc = rigTemplate:Clone()
 	else
-		npc = Instance.new("Model")
-		local root = Instance.new("Part")
-		root.Name = "HumanoidRootPart"
-		root.Size = Vector3.new(2, 2, 1)
-		root.Parent = npc
-		npc.PrimaryPart = root
+		-- Membuat Full Avatar R6 manusia lengkap secara otomatis jika di Workspace belum ada Rig
+		npc = buildFullR6Avatar(shirtColor)
 	end
 
 	npc.Name = displayName
@@ -731,6 +1099,7 @@ function MapBinder.SpawnSingleVisitor(
 	end
 
 	-- Hanya HumanoidRootPart yang Anchored = true agar Motor6D kaki & tangan bisa berayun saat berjalan
+	-- Pastikan CanCollide = false agar pengunjung tidak mendorong pemain ke atas/terbang saat berpapasan
 	for _, desc in ipairs(npc:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			desc.Anchored = (desc == rootPart)
@@ -767,6 +1136,7 @@ function MapBinder.SpawnSingleVisitor(
 		prompt.Enabled = false
 		prompt.Parent = rootPart
 
+		visitorPrompt = prompt
 		prompt.Triggered:Connect(onInteract)
 	end
 
@@ -791,6 +1161,7 @@ function MapBinder.SpawnSingleVisitor(
 				p.Enabled = true
 			end
 		end
+		MapBinder.SetLoketPromptActive(true)
 		onArrivedAtLoket()
 	end)
 
@@ -798,6 +1169,7 @@ function MapBinder.SpawnSingleVisitor(
 end
 
 function MapBinder.DismissCurrentVisitor(npc: Model?, accepted: boolean, onFinished: () -> ())
+	MapBinder.SetLoketPromptActive(false)
 	if not npc or not npc.Parent then
 		onFinished()
 		return

@@ -1,6 +1,6 @@
 --!strict
 -- GameConfig.luau
--- Konfigurasi dasar ITK Anomalies (Progress 30% - Fitur Esensial Core Loop)
+-- Konfigurasi dasar ITK Anomalies (Progress 50% - Core Loop, Blackout & Sanity System)
 
 local GameConfig = {}
 
@@ -9,6 +9,15 @@ GameConfig.SHIFT = {
 	END_HOUR = 6, -- 06:00
 	VISITORS_PER_SHIFT = 5, -- 5 pengunjung per shift (datang satu per satu)
 	NEXT_VISITOR_DELAY = 3.5, -- Jeda detik setelah pengunjung sebelumnya selesai diproses
+}
+
+GameConfig.SANITY = {
+	MAX = 100,
+	INITIAL = 100,
+	DECISION_COST = 1,
+	BLACKOUT_TICK_COST = 1, -- Tiap detik selama lampu padam
+	ANOMALY_PASSED_COST = 15,
+	REPAIR_BONUS = 5,
 }
 
 GameConfig.SCORING = {

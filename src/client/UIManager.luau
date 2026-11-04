@@ -47,6 +47,25 @@ local cardFrame: Frame = nil :: any
 local cardHeaderLabel: TextLabel = nil :: any
 local cardBodyLabel: TextLabel = nil :: any
 
+local cctvBlackoutScreen: Frame = nil :: any
+local cctvBlackoutText: TextLabel = nil :: any
+
+local sanityBarFill: Frame = nil :: any
+local sanityLabel: TextLabel = nil :: any
+local blackoutBanner: Frame = nil :: any
+
+local wiringFrame: Frame = nil :: any
+local wiringFeedbackLabel: TextLabel = nil :: any
+local wiringConnectedCount = 0
+local selectedLeftWire: TextButton? = nil
+local activeWireConnections: { [string]: boolean } = {}
+local wireColors = {
+	{ name = "Merah", color = Color3.fromRGB(235, 65, 65) },
+	{ name = "Biru", color = Color3.fromRGB(55, 125, 235) },
+	{ name = "Kuning", color = Color3.fromRGB(240, 205, 50) },
+	{ name = "Hijau", color = Color3.fromRGB(50, 205, 90) },
+}
+
 local laptopFrame: Frame = nil :: any
 local laptopScroll: ScrollingFrame = nil :: any
 local tabButtons: { TextButton } = {}
@@ -247,15 +266,37 @@ function UIManager.Refresh()
 	end
 
 	local curVis = latestState.currentVisitor
-	if not curVis then
+	local canOpenLoket = (curVis ~= nil and curVis.arrivedAtLoket == true)
+	if not curVis or not curVis.arrivedAtLoket then
 		loketOpen = false
 		cardOpen = false
 	end
 
-	loketFrame.Visible = loketOpen and (curVis ~= nil) and (not cctvOpen)
-	cardFrame.Visible = cardOpen and (curVis ~= nil) and (not cctvOpen)
+	loketFrame.Visible = loketOpen and canOpenLoket and (not cctvOpen)
+	cardFrame.Visible = cardOpen and canOpenLoket and (not cctvOpen)
 	laptopFrame.Visible = laptopOpen and (not cctvOpen)
 	cctvBar.Visible = cctvOpen
+
+	-- Update Sanity Bar (Otak & Persentase Mental)
+	local sanity = latestState.sanity or 100
+	if sanityBarFill and sanityLabel then
+		local alpha = math.clamp(sanity / 100, 0, 1)
+		sanityBarFill.Size = UDim2.new(alpha, 0, 1, 0)
+		sanityBarFill.BackgroundColor3 = if sanity <= 30 then Color3.fromRGB(235, 55, 55) elseif sanity <= 60 then Color3.fromRGB(235, 175, 45) else Color3.fromRGB(60, 195, 105)
+		sanityLabel.Text = string.format("🧠 Sanity: %d%%", math.floor(sanity))
+		sanityLabel.TextColor3 = if sanity <= 30 then Color3.fromRGB(255, 110, 110) else Color3.fromRGB(235, 240, 245)
+	end
+
+	-- Notifikasi & Banner Mati Listrik
+	local isBlackoutNow = (latestState.isBlackout == true)
+	if blackoutBanner then
+		blackoutBanner.Visible = isBlackoutNow
+	end
+
+	-- Jika sedang membuka CCTV saat listrik padam, tampilkan layar no signal
+	if cctvBlackoutScreen then
+		cctvBlackoutScreen.Visible = cctvOpen and isBlackoutNow
+	end
 
 	if cctvOpen then
 		cctvTitleLabel.Text = CCTV_NAMES[currentCctvIndex] or "CCTV"
@@ -386,7 +427,7 @@ end
 
 function UIManager.OpenPanel(panelName: string)
 	if panelName == "Loket" then
-		if latestState and latestState.currentVisitor then
+		if latestState and latestState.currentVisitor and latestState.currentVisitor.arrivedAtLoket then
 			stopCctvCamera()
 			loketOpen = true
 			laptopOpen = false
@@ -397,6 +438,9 @@ function UIManager.OpenPanel(panelName: string)
 		cardOpen = false
 		UIManager.Refresh()
 	elseif panelName == "LaptopData" then
+		if latestState and latestState.isBlackout then
+			return -- Saat listrik padam, laptop tidak bisa dibuka sesuai GDD
+		end
 		stopCctvCamera()
 		laptopOpen = true
 		loketOpen = false
@@ -408,13 +452,21 @@ function UIManager.OpenPanel(panelName: string)
 		laptopOpen = false
 		startCctvCamera(currentCctvIndex)
 		UIManager.Refresh()
+	elseif panelName == "WiringMiniGame" then
+		stopCctvCamera()
+		loketOpen = false
+		cardOpen = false
+		laptopOpen = false
+		if wiringFrame then
+			wiringFrame.Visible = true
+		end
 	end
 end
 
 function UIManager.Init(onAction: (actionType: string, payload: any) -> ())
 	sendAction = onAction
 
-	for _, name in ipairs({ "ITKAnomaliesGui", "ITKAnomaliesHUD" }) do
+	for _, name in ipairs({ "ITKAnomaliesGui", "ITKAnomaliesHUD", "InputOverlay", "RuntimeInput" }) do
 		local old = playerGui:FindFirstChild(name)
 		if old then
 			old:Destroy()
@@ -427,7 +479,7 @@ function UIManager.Init(onAction: (actionType: string, payload: any) -> ())
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	screenGui.Parent = playerGui
 
-	-- 1. Indikator kecil di kanan atas
+	-- 1. Indikator status di kanan atas
 	local topRightBox = Instance.new("Frame")
 	topRightBox.Position = UDim2.new(1, -320, 0, 12)
 	topRightBox.Size = UDim2.new(0, 308, 0, 32)
@@ -447,6 +499,61 @@ function UIManager.Init(onAction: (actionType: string, payload: any) -> ())
 	hudStatusLabel.Font = Enum.Font.SourceSansSemibold
 	hudStatusLabel.TextSize = 15
 	hudStatusLabel.Parent = topRightBox
+
+	-- 1B. Sanity Bar (Kiri Bawah sesuai GDD Bab 8.3)
+	local sanityBox = Instance.new("Frame")
+	sanityBox.Position = UDim2.new(0, 16, 1, -48)
+	sanityBox.Size = UDim2.new(0, 200, 0, 30)
+	sanityBox.BackgroundColor3 = Color3.fromRGB(20, 23, 28)
+	sanityBox.BackgroundTransparency = 0.2
+	sanityBox.BorderSizePixel = 0
+	sanityBox.Parent = screenGui
+	addCorner(sanityBox, 5)
+	addStroke(sanityBox, Color3.fromRGB(65, 75, 90))
+
+	local sanityBg = Instance.new("Frame")
+	sanityBg.Position = UDim2.new(0, 8, 0, 6)
+	sanityBg.Size = UDim2.new(1, -16, 0, 18)
+	sanityBg.BackgroundColor3 = Color3.fromRGB(35, 38, 45)
+	sanityBg.BorderSizePixel = 0
+	sanityBg.Parent = sanityBox
+	addCorner(sanityBg, 3)
+
+	sanityBarFill = Instance.new("Frame")
+	sanityBarFill.Size = UDim2.new(1, 0, 1, 0)
+	sanityBarFill.BackgroundColor3 = Color3.fromRGB(60, 195, 105)
+	sanityBarFill.BorderSizePixel = 0
+	sanityBarFill.Parent = sanityBg
+	addCorner(sanityBarFill, 3)
+
+	sanityLabel = Instance.new("TextLabel")
+	sanityLabel.Size = UDim2.new(1, 0, 1, 0)
+	sanityLabel.BackgroundTransparency = 1
+	sanityLabel.Text = "🧠 Sanity: 100%"
+	sanityLabel.TextColor3 = Color3.fromRGB(240, 245, 250)
+	sanityLabel.Font = Enum.Font.SourceSansBold
+	sanityLabel.TextSize = 13
+	sanityLabel.Parent = sanityBg
+
+	-- 1C. Banner Peringatan Mati Listrik
+	blackoutBanner = Instance.new("Frame")
+	blackoutBanner.Position = UDim2.new(0.5, -210, 0, 52)
+	blackoutBanner.Size = UDim2.new(0, 420, 0, 34)
+	blackoutBanner.BackgroundColor3 = Color3.fromRGB(175, 35, 35)
+	blackoutBanner.BorderSizePixel = 0
+	blackoutBanner.Visible = false
+	blackoutBanner.Parent = screenGui
+	addCorner(blackoutBanner, 4)
+	addStroke(blackoutBanner, Color3.fromRGB(245, 180, 180))
+
+	local blackoutText = Instance.new("TextLabel")
+	blackoutText.Size = UDim2.new(1, 0, 1, 0)
+	blackoutText.BackgroundTransparency = 1
+	blackoutText.Text = "⚡ LISTRIK POS PADAM! Ikuti Highlight Kuning menuju Gardu Listrik!"
+	blackoutText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	blackoutText.Font = Enum.Font.SourceSansBold
+	blackoutText.TextSize = 14
+	blackoutText.Parent = blackoutBanner
 
 	-- 2. Kotak Dialog Loket (Menampilkan Pertanyaan Satpam & Jawaban Pengunjung)
 	loketFrame = Instance.new("Frame")
@@ -684,6 +791,25 @@ function UIManager.Init(onAction: (actionType: string, payload: any) -> ())
 	cctvTitleLabel.TextSize = 15
 	cctvTitleLabel.Parent = cctvBar
 
+	-- Layar statik/gelap saat CCTV mati akibat listrik padam
+	cctvBlackoutScreen = Instance.new("Frame")
+	cctvBlackoutScreen.Size = UDim2.new(1, 0, 1, 0)
+	cctvBlackoutScreen.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+	cctvBlackoutScreen.BorderSizePixel = 0
+	cctvBlackoutScreen.Visible = false
+	cctvBlackoutScreen.ZIndex = 2
+	cctvBlackoutScreen.Parent = screenGui
+
+	cctvBlackoutText = Instance.new("TextLabel")
+	cctvBlackoutText.Size = UDim2.new(1, 0, 1, 0)
+	cctvBlackoutText.BackgroundTransparency = 1
+	cctvBlackoutText.Text = "⚠️ SINYAL CCTV TERPUTUS (NO SIGNAL)\n\nSumber daya listrik pos satpam mati!\nIkuti Highlight Kuning ke Gardu Listrik untuk memperbaiki kabel."
+	cctvBlackoutText.TextColor3 = Color3.fromRGB(240, 70, 70)
+	cctvBlackoutText.Font = Enum.Font.RobotoMono
+	cctvBlackoutText.TextSize = 20
+	cctvBlackoutText.ZIndex = 3
+	cctvBlackoutText.Parent = cctvBlackoutScreen
+
 	local prevCctvBtn = makeButton(cctvBar, "< Kamera", UDim2.new(0, 10, 0, 12), UDim2.new(0, 90, 0, 30), Color3.fromRGB(40, 50, 65))
 	prevCctvBtn.MouseButton1Click:Connect(function()
 		startCctvCamera(currentCctvIndex - 1)
@@ -703,6 +829,126 @@ function UIManager.Init(onAction: (actionType: string, payload: any) -> ())
 		stopCctvCamera()
 		UIManager.Refresh()
 	end)
+
+	-- 6B. Panel Mini-Game Sambung Kabel Gardu Listrik (Wiring Panel)
+	wiringFrame = Instance.new("Frame")
+	wiringFrame.Position = UDim2.new(0.5, -240, 0.5, -160)
+	wiringFrame.Size = UDim2.new(0, 480, 0, 320)
+	wiringFrame.BackgroundColor3 = Color3.fromRGB(30, 34, 40)
+	wiringFrame.BorderSizePixel = 0
+	wiringFrame.Visible = false
+	wiringFrame.Parent = screenGui
+	addCorner(wiringFrame, 8)
+	addStroke(wiringFrame, Color3.fromRGB(85, 100, 120))
+
+	local wiringTitle = Instance.new("TextLabel")
+	wiringTitle.Position = UDim2.new(0, 16, 0, 12)
+	wiringTitle.Size = UDim2.new(1, -90, 0, 24)
+	wiringTitle.BackgroundTransparency = 1
+	wiringTitle.Text = "Panel Gardu Listrik: Sambungkan Kabel Sesuai Warna"
+	wiringTitle.TextColor3 = Color3.fromRGB(240, 245, 250)
+	wiringTitle.Font = Enum.Font.SourceSansBold
+	wiringTitle.TextSize = 16
+	wiringTitle.TextXAlignment = Enum.TextXAlignment.Left
+	wiringTitle.Parent = wiringFrame
+
+	local closeWiringBtn = makeButton(wiringFrame, "Tutup", UDim2.new(1, -70, 0, 10), UDim2.new(0, 56, 0, 24), Color3.fromRGB(55, 60, 70))
+	closeWiringBtn.MouseButton1Click:Connect(function()
+		wiringFrame.Visible = false
+	end)
+
+	wiringFeedbackLabel = Instance.new("TextLabel")
+	wiringFeedbackLabel.Position = UDim2.new(0, 16, 0, 42)
+	wiringFeedbackLabel.Size = UDim2.new(1, -32, 0, 20)
+	wiringFeedbackLabel.BackgroundTransparency = 1
+	wiringFeedbackLabel.Text = "Klik soket di sebelah kiri, lalu klik soket dengan warna yang sama di kanan."
+	wiringFeedbackLabel.TextColor3 = Color3.fromRGB(180, 190, 205)
+	wiringFeedbackLabel.Font = Enum.Font.SourceSans
+	wiringFeedbackLabel.TextSize = 14
+	wiringFeedbackLabel.TextXAlignment = Enum.TextXAlignment.Left
+	wiringFeedbackLabel.Parent = wiringFrame
+
+	-- Buat urutan kabel kanan yang diacak (shuffled)
+	local rightOrder = { 3, 1, 4, 2 }
+	local leftButtons: { [number]: TextButton } = {}
+	local rightButtons: { [number]: TextButton } = {}
+
+	local function resetWiringBoard()
+		wiringConnectedCount = 0
+		selectedLeftWire = nil
+		activeWireConnections = {}
+		wiringFeedbackLabel.Text = "Klik soket di sebelah kiri, lalu klik soket dengan warna yang sama di kanan."
+		wiringFeedbackLabel.TextColor3 = Color3.fromRGB(180, 190, 205)
+		for _, b in pairs(leftButtons) do
+			b.Text = b:GetAttribute("OrigText") or ""
+		end
+		for _, b in pairs(rightButtons) do
+			b.Text = b:GetAttribute("OrigText") or ""
+		end
+	end
+
+	for i, w in ipairs(wireColors) do
+		local lBtn = makeButton(wiringFrame, "● " .. w.name, UDim2.new(0, 24, 0, 80 + (i - 1) * 52), UDim2.new(0, 130, 0, 38), w.color)
+		lBtn:SetAttribute("ColorName", w.name)
+		lBtn:SetAttribute("OrigText", "● " .. w.name)
+		lBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		leftButtons[i] = lBtn
+
+		lBtn.MouseButton1Click:Connect(function()
+			if activeWireConnections[w.name] then
+				return
+			end
+			selectedLeftWire = lBtn
+			wiringFeedbackLabel.Text = "Kabel [" .. w.name .. "] dipilih. Sekarang klik ujung kabel [" .. w.name .. "] di kanan!"
+			wiringFeedbackLabel.TextColor3 = Color3.fromRGB(245, 220, 65)
+		end)
+	end
+
+	for slotIdx, colorIdx in ipairs(rightOrder) do
+		local rw = wireColors[colorIdx]
+		local rBtn = makeButton(wiringFrame, rw.name .. " ●", UDim2.new(1, -154, 0, 80 + (slotIdx - 1) * 52), UDim2.new(0, 130, 0, 38), rw.color)
+		rBtn:SetAttribute("ColorName", rw.name)
+		rBtn:SetAttribute("OrigText", rw.name .. " ●")
+		rBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		rightButtons[slotIdx] = rBtn
+
+		rBtn.MouseButton1Click:Connect(function()
+			if not selectedLeftWire then
+				wiringFeedbackLabel.Text = "Pilih kabel di sebelah kiri terlebih dahulu!"
+				wiringFeedbackLabel.TextColor3 = Color3.fromRGB(245, 120, 120)
+				return
+			end
+
+			local leftColor = selectedLeftWire:GetAttribute("ColorName")
+			local rightColor = rBtn:GetAttribute("ColorName")
+
+			if leftColor == rightColor then
+				activeWireConnections[leftColor] = true
+				selectedLeftWire.Text = "✓ Tersambung"
+				rBtn.Text = "Tersambung ✓"
+				wiringConnectedCount += 1
+				selectedLeftWire = nil
+
+				wiringFeedbackLabel.Text = string.format("Kabel %s tersambung! (%d/4)", tostring(leftColor), wiringConnectedCount)
+				wiringFeedbackLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
+
+				if wiringConnectedCount >= 4 then
+					wiringFeedbackLabel.Text = "Semua kabel tersambung! Listrik berhasil dipulihkan!"
+					wiringFeedbackLabel.TextColor3 = Color3.fromRGB(80, 240, 120)
+					task.delay(0.8, function()
+						wiringFrame.Visible = false
+						resetWiringBoard()
+						if sendAction then
+							sendAction("PowerRepaired", {})
+						end
+					end)
+				end
+			else
+				wiringFeedbackLabel.Text = "Salah sambung! Warna kabel tidak cocok!"
+				wiringFeedbackLabel.TextColor3 = Color3.fromRGB(245, 80, 80)
+			end
+		end)
+	end
 
 	-- 6. Jumpscare Overlay & Game Over
 	jumpscareOverlay = Instance.new("Frame")

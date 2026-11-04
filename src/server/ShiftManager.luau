@@ -34,6 +34,10 @@ local visitorList: { VisitorGenerator.VisitorProfile } = {}
 local currentVisitorIndex = 0
 local currentVisitor: CurrentVisitorState? = nil
 local isTransitioning = false
+local sanityValue = 100
+local isBlackout = false
+local blackoutThread: thread? = nil
+local blackoutVisitorTarget = 2
 
 local stats = {
 	totalVisitors = 5,
@@ -76,9 +80,60 @@ function ShiftManager.BroadcastState()
 		currentVisitor = visitorClientData,
 		shiftReport = shiftReport,
 		gameOverData = gameOverData,
+		sanity = sanityValue,
+		isBlackout = isBlackout,
 	}
 
 	stateSyncEvent:FireAllClients(payload)
+end
+
+local function triggerBlackout()
+	if isBlackout or phase ~= "Active" then
+		return
+	end
+	isBlackout = true
+	MapBinder.SetBlackout(true)
+	ShiftManager.BroadcastState()
+
+	if blackoutThread then
+		task.cancel(blackoutThread)
+	end
+
+	blackoutThread = task.spawn(function()
+		while isBlackout and phase == "Active" do
+			task.wait(1.5)
+			if isBlackout and phase == "Active" then
+				sanityValue = math.clamp(sanityValue - GameConfig.SANITY.BLACKOUT_TICK_COST, 0, 100)
+				ShiftManager.BroadcastState()
+				if sanityValue <= 0 then
+					phase = "GameOver"
+					gameOverData = {
+						shiftNumber = shiftNumber,
+						killerName = "Kegelapan & Halusinasi",
+						anomalyType = "Sanity Depleted",
+						explanation = "Kondisi mental pemain runtuh karena terlalu lama berada dalam kegelapan pos satpam.",
+					}
+					jumpscareEvent:FireAllClients(gameOverData)
+					ShiftManager.BroadcastState()
+					break
+				end
+			end
+		end
+	end)
+end
+
+local function restorePower()
+	if not isBlackout then
+		return
+	end
+	isBlackout = false
+	MapBinder.SetBlackout(false)
+	sanityValue = math.clamp(sanityValue + GameConfig.SANITY.REPAIR_BONUS, 0, 100)
+	if blackoutThread then
+		task.cancel(blackoutThread)
+		blackoutThread = nil
+	end
+	ShiftManager.BroadcastState()
 end
 
 local function spawnNextVisitor()
@@ -150,6 +205,8 @@ local function spawnNextVisitor()
 end
 
 function ShiftManager.StartShift(targetShift: number)
+	local isNewGame = (targetShift == 1 and shiftNumber == 1 and stats.processed == 0)
+
 	shiftNumber = targetShift
 	phase = "WaitingForGate"
 	isTransitioning = false
@@ -158,9 +215,23 @@ function ShiftManager.StartShift(targetShift: number)
 	shiftReport = nil
 	gameOverData = nil
 
+	-- Sanity dipertahankan antar shift (tidak reset penuh ke 100%), hanya di awal game baru atau jika retry setelah game over
+	if isNewGame or sanityValue <= 0 then
+		sanityValue = 100
+	end
+
+	isBlackout = false
+	if blackoutThread then
+		task.cancel(blackoutThread)
+		blackoutThread = nil
+	end
+
 	MapBinder.CleanupAllVisitors()
 	MapBinder.SetGateOpen(false)
 	MapBinder.SetGateTutorialActive(true)
+	MapBinder.SetBlackout(false)
+
+	blackoutVisitorTarget = math.random(2, 3)
 
 	visitorList = VisitorGenerator.GenerateShiftList(GameConfig.SHIFT.VISITORS_PER_SHIFT)
 	local anomalyCount = 0
@@ -211,6 +282,14 @@ local function handleDecision(_player: Player, accept: boolean)
 	currentVisitor = nil
 
 	stats.processed += 1
+	sanityValue = math.clamp(sanityValue - GameConfig.SANITY.DECISION_COST, 0, 100)
+
+	-- Picu mati lampu di pertengahan shift sesuai skenario GDD
+	if stats.processed == blackoutVisitorTarget and not isBlackout then
+		task.delay(1.0, function()
+			triggerBlackout()
+		end)
+	end
 
 	-- Tutup panel loket tanpa memberi notifikasi benar/salah di atas layar
 	openPanelEvent:FireAllClients("CloseLoket")
@@ -284,6 +363,8 @@ local function onClientAction(player: Player, actionType: string, payload: any)
 		ShiftManager.StartShift(shiftNumber + 1)
 	elseif actionType == "RetryShift" then
 		ShiftManager.StartShift(shiftNumber)
+	elseif actionType == "PowerRepaired" then
+		restorePower()
 	end
 end
 
@@ -322,6 +403,11 @@ function ShiftManager.Init()
 		end,
 		onInteractPcCctv = function(player: Player)
 			openPanelEvent:FireClient(player, "PcCctv")
+		end,
+		onInteractPowerPanel = function(player: Player)
+			if isBlackout then
+				openPanelEvent:FireClient(player, "WiringMiniGame")
+			end
 		end,
 	})
 
