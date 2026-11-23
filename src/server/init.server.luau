@@ -1,9 +1,11 @@
 --!strict
--- init.server.luau
--- Entry point utama Server ITK Anomalies
+-- init.server.luau (Main.server.luau)
+-- Entry point utama Server ITK Anomalies.
+-- Menginisialisasi seluruh Server Services secara berurutan melalui ShiftService.
 
-local ShiftManager = require(script:WaitForChild("ShiftManager"))
+local Services = script:WaitForChild("Services")
+local ShiftService = require(Services:WaitForChild("ShiftService"))
 
-print("[ITK Anomalies] Memulai sistem server Pos Satpam Malam ITK...")
-ShiftManager.Init()
-print("[ITK Anomalies] Sistem server berhasil dijalankan.")
+print("[ITK Anomalies] Memulai arsitektur Server Services Pos Satpam Malam ITK...")
+ShiftService.Init()
+print("[ITK Anomalies] Seluruh Server Services berhasil dijalankan.")
